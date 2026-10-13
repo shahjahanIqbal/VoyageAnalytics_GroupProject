@@ -17,12 +17,6 @@ For each experiment, `mlops_runner.py`:
 
 The default tracking store is a local `mlruns/` directory. MLflow's UI lets the team compare experiments and inspect each run.
 
-## What it does not do yet
-
-This is a deliberately basic first MLOps layer. It does **not** automatically deploy models, register/promote a production model, monitor live traffic or drift, trigger scheduled retraining, or guarantee that different model owners' input/output contracts are compatible. Those are later steps in the project flowchart.
-
-It also does not alter the model's training logic. Each model script must still validate its data, train/evaluate correctly, and write its metrics and artifacts.
-
 ## 1. Install
 
 Run these commands from the project root in the same virtual environment used for the models:
@@ -31,7 +25,7 @@ Run these commands from the project root in the same virtual environment used fo
 python -m pip install mlflow
 ```
 
-The model-specific dependencies must also be installed. For example, the existing destination ranker uses pandas, NumPy, scikit-learn, and joblib; the group regression script also uses XGBoost.
+The model-specific dependencies must also be installed. 
 
 Check the runner:
 
@@ -84,7 +78,7 @@ If the team uses a remote MLflow tracking server, set `MLFLOW_TRACKING_URI` or p
 
 ## 4. How each group member can use the same wrapper
 
-The project flowchart assigns four workstreams: data engineering/EDA, flight price regression, hotel recommendation, and gender classification/platform integration. The wrapper is generic: each owner supplies their own command, metrics files, input files, and artifacts. No one needs to merge model internals just to log experiments.
+The wrapper is generic: each owner supplies their own command, metrics files, input files, and artifacts. No one needs to merge model internals just to log experiments.
 
 ### Member 1: Data engineering and EDA
 
@@ -107,8 +101,6 @@ Only use those input paths if that script actually consumes them. For a differen
 
 ### Member 2: Flight-price regression
 
-The uploaded regression script reads `data/train.csv`, `data/val.csv`, and `data/test.csv`; it writes `outputs/regression_results.csv` and `outputs/regression_test_results.csv`, and saves a model under `models/`.
-
 ```bash
 python mlops_runner.py \
   --experiment-name VoyageAnalytics \
@@ -123,11 +115,11 @@ python mlops_runner.py \
   -- python regression.py
 ```
 
-This example assumes the regression script's configured target and feature set are the intended flight-price task. The currently uploaded `regression.py` describes an attraction-rating regression target (`Rating`), so the owner must confirm the actual target before calling it *flight-price* regression.
+This example assumes the regression script's configured target and feature set are the intended flight-price task. 
 
 ### Member 3: Hotel recommendation
 
-Use the hotel model owner's actual script and its actual output paths. For the uploaded history-based hotel recommender, the pattern is:
+Use the actual script and its output paths. 
 
 ```bash
 python mlops_runner.py \
@@ -140,9 +132,7 @@ python mlops_runner.py \
   -- python train_hotel_recommender.py
 ```
 
-If the group's hotel recommender instead uses `recommendation.py` and the `data/`/`outputs/` structure, use that script's own metric and model paths instead. The command must match the model owner's implementation.
-
-### Member 4: Gender classification and platform integration
+### Member 4: Gender classification 
 
 For the currently uploaded classification script, the pattern is:
 
@@ -160,8 +150,6 @@ python mlops_runner.py \
   --param task=classification \
   -- python classification.py
 ```
-
-Confirm the target column is actually gender before describing this as gender classification. The currently uploaded `classification.py` is configured around a visit-mode target (`VisitMode`), so the script name alone is not evidence that it predicts gender.
 
 ## 5. CLI options
 
@@ -189,9 +177,7 @@ python mlops_runner.py \
   -- python train_destination_ranker.py
 ```
 
-The wrapper logs the parameters you explicitly pass. It does not introspect every model hyperparameter from a child script automatically.
-
-## 6. How metrics are logged
+## 6. Metrics Logging
 
 For every declared CSV, the runner reads numeric columns and logs them to MLflow. For a one-row metrics file, a column such as `hit_rate_at_5` is logged as a metric named like:
 
@@ -202,30 +188,3 @@ candidate_ranker_metrics.hit_rate_at_5
 For a multi-row CSV, each row gets a suffix such as `.row_1`, `.row_2`, and so on. Text model labels such as `Model` are recorded as tags when recognized. The CSV itself is uploaded as an artifact so the full table remains available.
 
 For meaningful comparisons, all model owners should document the metric definitions and ensure higher/lower is better is understood. For example, higher Hit@5 is better, while lower MAE is better.
-
-## 7. Team conventions to agree on
-
-Before multiple members start logging runs, agree on:
-
-1. One shared experiment name: `VoyageAnalytics`.
-2. Consistent run names: `task-model-version` or `task-model-date`.
-3. Standard metric names and definitions.
-4. A small model contract: `train`, `evaluate`, `predict/recommend`, `save`, `load`.
-5. Input data versions and feature/schema versions.
-6. A consistent location for each model's metrics and serialized artifact.
-7. Which model is approved for the app, and who approves a replacement.
-8. Whether tracking is local for development or backed by a shared MLflow server.
-
-Do not log personally identifying data or upload raw datasets as artifacts unless the team has explicitly decided that the storage and access controls are appropriate.
-
-## 8. Suggested next steps after this starter
-
-1. Make each model save a reusable model artifact and a feature/schema manifest.
-2. Add automated tests for input schema, prediction shape, and metric calculations.
-3. Add a CI job that runs tests and a small smoke-training run.
-4. Add an inference API for each model owner or one API gateway that routes to each model service.
-5. Add model approval/registry workflow only after the team agrees on validation gates.
-6. Monitor service errors, input distributions, prediction distributions, and delayed ground-truth metrics.
-7. Trigger retraining with a scheduler only when there is a defined data-refresh cadence or monitoring threshold.
-
-The intended first milestone is **experiment tracking and reproducibility**, not a claim that the project already has full production MLOps.
