@@ -3,16 +3,13 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import joblib
-
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
 
-BASE_DIR = Path(__file__).resolve().parent
-OUT = BASE_DIR / "travel_recommender_outputs"
-OUT.mkdir(parents=True, exist_ok=True)
+OUT = Path("travel_recommender_outputs")
 TOP_K = 5
 RANDOM_STATE = 42
 
@@ -266,9 +263,7 @@ model.fit(
     train_candidates["label"],
 )
 
-# Save the complete fitted pipeline for Streamlit inference.
-# This includes preprocessing and the classifier, so the frontend can pass
-# the same raw feature columns used during training.
+# Save the fitted model for inference and MLflow artifact tracking.
 model_path = OUT / "candidate_ranker.joblib"
 joblib.dump(model, model_path)
 print(f"Saved Random Forest pipeline to: {model_path.resolve()}")
@@ -335,6 +330,203 @@ predictions.to_csv(
 )
 
 print(f"\nSaved outputs to: {OUT.resolve()}")
+
+
+
+# ============================================================
+# SEASONAL DESTINATION RECOMMENDER
+# ============================================================
+
+SEASONAL_WEIGHTS = {
+    "user_destination": 0.45,
+    "user_destination_month": 0.35,
+    "user_route": 0.15,
+    "global_destination": 0.05,
+}
+
+SEASONAL_SMOOTHING = 5.0
+
+
+def recommend_destinations_seasonal(
+    user,
+    origin,
+    departure_month,
+    history,
+    k=TOP_K,
+):
+    """
+    Rank destinations using only the supplied historical data.
+
+    history must contain only journeys available before the
+    recommendation date. It must include userCode, from, to,
+    and date columns.
+    """
+    history = history.copy()
+
+    if history.empty:
+        return []
+
+    history["userCode"] = history["userCode"].astype(str)
+    history["from"] = history["from"].astype(str)
+    history["to"] = history["to"].astype(str)
+    history["date"] = pd.to_datetime(history["date"], errors="coerce")
+
+    history = history.dropna(subset=["date", "userCode", "from", "to"])
+
+    user = str(user)
+    origin = str(origin)
+    departure_month = int(departure_month)
+
+    destinations = sorted(history["to"].unique())
+
+    if not destinations:
+        return []
+
+    user_history = history[history["userCode"] == user]
+    user_destination_history = user_history[
+        user_history["to"].isin(destinations)
+    ]
+    user_month_history = user_destination_history[
+        user_destination_history["date"].dt.month == departure_month
+    ]
+    user_route_history = user_history[
+        user_history["from"] == origin
+    ]
+
+    global_counts = history["to"].value_counts()
+    global_total = global_counts.sum()
+
+    user_counts = user_destination_history["to"].value_counts()
+    user_total = user_counts.sum()
+
+    seasonal_counts = user_month_history["to"].value_counts()
+    seasonal_total = seasonal_counts.sum()
+
+    route_counts = user_route_history["to"].value_counts()
+    route_total = route_counts.sum()
+
+    # Smooth sparse seasonal history toward the user's overall
+    # destination preferences instead of overreacting to one trip.
+    user_prior = {
+        destination: (
+            user_counts.get(destination, 0) / user_total
+            if user_total else 0.0
+        )
+        for destination in destinations
+    }
+
+    seasonal_scores = {}
+    for destination in destinations:
+        seasonal_count = seasonal_counts.get(destination, 0)
+        seasonal_scores[destination] = (
+            seasonal_count
+            + SEASONAL_SMOOTHING * user_prior[destination]
+        ) / (
+            seasonal_total + SEASONAL_SMOOTHING
+        )
+
+    # Use uniform fallback distributions when a user has no history.
+    global_scores = {
+        destination: (
+            global_counts.get(destination, 0) / global_total
+            if global_total else 1 / len(destinations)
+        )
+        for destination in destinations
+    }
+
+    route_scores = {
+        destination: (
+            route_counts.get(destination, 0) / route_total
+            if route_total else user_prior[destination]
+        )
+        for destination in destinations
+    }
+
+    combined_scores = {}
+
+    for destination in destinations:
+        combined_scores[destination] = (
+            SEASONAL_WEIGHTS["user_destination"]
+            * user_prior[destination]
+            + SEASONAL_WEIGHTS["user_destination_month"]
+            * seasonal_scores[destination]
+            + SEASONAL_WEIGHTS["user_route"]
+            * route_scores[destination]
+            + SEASONAL_WEIGHTS["global_destination"]
+            * global_scores[destination]
+        )
+
+    ranked = sorted(
+        combined_scores.items(),
+        key=lambda item: (-item[1], item[0]),
+    )
+
+    return [(destination, float(score)) for destination, score in ranked[:k]]
+
+
+
+def evaluate_seasonal_destination(test, history, split_name):
+    """
+    Evaluate seasonal recommendations using historical journeys
+    strictly earlier than each test journey's date.
+    """
+    results = []
+
+    history = history.copy()
+    history["date"] = pd.to_datetime(history["date"], errors="coerce")
+    test = test.copy()
+    test["date"] = pd.to_datetime(test["date"], errors="coerce")
+
+    for _, row in test.sort_values("date").iterrows():
+        user = str(row["userCode"])
+        origin = str(row["from"])
+        actual = str(row["to"])
+        target_date = row["date"]
+
+        # Exclude the target journey and all future journeys.
+        past = history[history["date"] < target_date]
+
+        ranked = recommend_destinations_seasonal(
+            user=user,
+            origin=origin,
+            departure_month=target_date.month,
+            history=past,
+            k=TOP_K,
+        )
+
+        recommended = [destination for destination, _ in ranked]
+
+        rank = (
+            recommended.index(actual) + 1
+            if actual in recommended else None
+        )
+
+        results.append({
+            "split": split_name,
+            "userCode": user,
+            "date": target_date,
+            "actual_destination": actual,
+            "recommended_destinations": recommended,
+            "top1_correct": bool(recommended and recommended[0] == actual),
+            "hit_at_5": int(actual in recommended),
+            "reciprocal_rank": 1 / rank if rank is not None else 0.0,
+            "historical_rows": len(past),
+        })
+
+    predictions = pd.DataFrame(results)
+
+    metrics = {
+        "split": split_name,
+        "stage": "destination_seasonal",
+        "test_rows": len(predictions),
+        "top1_accuracy": predictions["top1_correct"].mean(),
+        "hit_rate_at_5": predictions["hit_at_5"].mean(),
+        "mrr_at_5": predictions["reciprocal_rank"].mean(),
+    }
+
+    return predictions, metrics
+
+
 
 # ============================================================
 # 7. SEASONAL DESTINATION RECOMMENDER
