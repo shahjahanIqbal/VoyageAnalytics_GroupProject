@@ -1,0 +1,10 @@
+services:
+  voyage-analytics:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: voyage-analytics:local
+    container_name: voyage-analytics
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
