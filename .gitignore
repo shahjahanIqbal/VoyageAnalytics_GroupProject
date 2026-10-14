@@ -1,0 +1,5 @@
+users.csv
+hotels.csv
+gender_model.joblib
+__pycache__/
+*.pyc
