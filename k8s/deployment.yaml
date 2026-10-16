@@ -21,6 +21,8 @@ spec:
           ports:
             - name: http
               containerPort: 8501
+            - name: api
+              containerPort: 5001
           readinessProbe:
             httpGet:
               path: /_stcore/health

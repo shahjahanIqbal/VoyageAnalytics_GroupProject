@@ -1,6 +1,9 @@
 .git/
+.gitignore
+backup_*/
 .venv/
 venv/
+voyage/
 env/
 __pycache__/
 *.py[cod]
@@ -13,3 +16,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+mlruns/
+mlflow.db
+*.log
+travel_recommender_outputs/candidate_ranker.joblib
+model_outputs/train_candidates_*.csv

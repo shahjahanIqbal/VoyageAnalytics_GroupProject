@@ -1,8 +1,14 @@
 # VoyageAnalytics: Travel Recommendation Pipeline
 
-This README documents the recommendation-modeling part of **VoyageAnalytics**: how the raw travel records are transformed into journey-level datasets, how the destination recommenders are run and compared, and how to execute the workflow from one command.
+This README documents the recommendation-modeling part of **VoyageAnalytics**: how the raw travel records are transformed into journey-level datasets, how the destination recommenders are run and compared, how the hotel recommender is trained, and how to execute the workflow from one command.
 
 The orchestration entry point is `run_recommendation_pipeline.py`. It runs the existing project scripts in sequence; it does **not** replace their modeling logic.
+
+**New in this version:**
+- **Stage 9**: Multi-model destination recommender with seasonal ML features (replaces manual weights)
+- **Stage 10**: Hotel recommender ML model (predicts hotel expenditure from user/travel features)
+- **Stage 11**: End-to-end inference pipeline (destination → hotel)
+- **Stage 12**: Unified model evaluation and comparison
 
 ## 1. What this part of the project does
 
@@ -35,10 +41,18 @@ VoyageAnalytics/
 ├── evaluate_destination_splits.py
 ├── analyze_user_seasonality.py
 ├── find_top_seasonal_travellers.py
+├── train_destination_models.py          # NEW: Multi-model destination recommender
+├── prepare_hotel_data.py                # NEW: Hotel training data preparation
+├── train_hotel_model.py                 # NEW: Hotel recommender ML models
+├── run_recommendation_inference.py      # NEW: End-to-end inference pipeline
+├── evaluate_all_models.py               # NEW: Unified model evaluation
 ├── users.csv
 ├── flights.csv
 ├── hotels.csv
-└── travel_recommender_outputs/       # created/filled by the scripts
+├── travel_recommender_outputs/          # Original pipeline outputs
+├── model_outputs/                       # NEW: New model artifacts & metrics
+├── backup/                              # NEW: Full project backup
+└── seasonal_travellers/
 ```
 
 The app and EDA scripts may also live in the repository, but they are not launched by this orchestration script.
@@ -142,6 +156,87 @@ The current pattern definition flags a user/destination/month combination when i
 Combines the prepared training journeys with `users.csv`, ranks or summarizes recurring seasonal travel patterns, and creates a report with CSV/text/plot outputs in the `seasonal_travellers/` directory by default.
 
 This stage is useful for inspecting examples and communicating patterns. It should not be treated as a model evaluation metric.
+
+### Stage 9: Multi-model destination recommender with seasonal ML features
+
+**Script:** `train_destination_models.py`
+
+Trains **3 different models** (Random Forest, Gradient Boosting, Logistic Regression) on **both split strategies** (global chronological and user-specific chronological), using seasonal patterns as learned ML features instead of manual weights.
+
+Key innovations:
+- Loads both `journeys_train/test.csv` (global split) and `user_train/test.csv` (user-specific split)
+- Engineers seasonal features from `recurring_user_destination_month.csv` and `user_monthly_trip_counts.csv`:
+  - `seasonal_trips`: user's trip count to destination in this month
+  - `seasonal_years`: distinct years visited
+  - `seasonal_strength`: smoothed monthly preference
+  - `is_recurring_seasonal`: binary flag (≥2 trips across ≥2 years)
+- Trains 6 experiments total (3 models × 2 splits) using candidate-ranking approach
+- Saves metrics to `model_outputs/destination_model_comparison.csv`
+- Selects best model by Hit@5 (primary) and MRR@5 (secondary)
+- Saves best model as `model_outputs/best_destination_model.joblib`
+
+**Best result (current):** Logistic Regression on User-Specific Split — Hit@5: 62.47%, MRR@5: 28.46%
+
+This stage replaces the manual `SEASONAL_WEIGHTS` in `train_destination_ranker.py` with learned feature importance.
+
+### Stage 10: Hotel recommender ML model
+
+**Scripts:** `prepare_hotel_data.py` → `train_hotel_model.py`
+
+Prepares a user-hotel-destination dataset and trains ML models to predict hotel expenditure.
+
+**Data preparation (`prepare_hotel_data.py`):**
+- Joins `journeys.csv` + `hotels.csv` + `users.csv`
+- Creates user-level features: past trip count, total/avg expenditure, preferred flight class/agency
+- Creates user-destination hotel history: past stays, most common hotel, avg hotel spend
+- Creates destination-level hotel stats: avg price, avg total, avg days, hotel count
+- Adds temporal features: departure month (sin/cos), day of week
+- Creates user-chronological 80/20 split (per-user time-based)
+- Saves: `model_outputs/hotel_train.csv`, `model_outputs/hotel_test.csv`, `model_outputs/hotel_training_data.csv`
+
+**Model training (`train_hotel_model.py`):**
+- Target: `hotel_total` (regression — predicts hotel expenditure)
+- Trains 3 models: Random Forest, Gradient Boosting, Linear Regression
+- Evaluates with MAE, RMSE, R²
+- Saves metrics to `model_outputs/hotel_model_comparison.csv`
+- Saves best model as `model_outputs/best_hotel_model.joblib`
+
+**Best result (current):** Linear Regression — R²: 0.3659, MAE: $214.58, RMSE: $254.88
+
+### Stage 11: End-to-end inference pipeline
+
+**Script:** `run_recommendation_inference.py`
+
+Combines destination and hotel recommenders into a single workflow:
+
+1. User provides: `user_code`, `origin`, `departure_date` (and optional `destination`)
+2. **Destination model** → Top-5 recommended destinations with scores
+3. User selects destination (or auto-uses top-1)
+4. **Hotel model** → Predicted hotel expenditure for that user-destination pair
+5. Shows user's historical hotels at that destination + most popular hotels overall
+
+Usage:
+```bash
+python run_recommendation_inference.py --user_code 0 --origin "Recife (PE)" --departure_date "2024-07-15"
+python run_recommendation_inference.py --user_code 0 --origin "Recife (PE)" --departure_date "2024-07-15" --destination "Salvador (BH)"
+```
+
+### Stage 12: Unified model evaluation
+
+**Script:** `evaluate_all_models.py`
+
+Reads all metrics files and generates a comprehensive comparison report:
+
+- Destination model comparison (6 experiments)
+- Hotel model comparison (3 experiments)
+- Baseline comparison (original pipeline)
+- Split strategy comparison
+- Seasonal patterns summary
+
+Run:
+```bash
+python evaluate_all_models.py
+```
 
 ## 5. Install the environment
 
@@ -262,6 +357,26 @@ The exact file list may change as the scripts evolve. The most reliable inventor
 
 The top seasonal-traveller report is written to `seasonal_travellers/` by default, including `seasonal_traveller_patterns.csv` and report/plot outputs.
 
+### New outputs in `model_outputs/`
+
+The new multi-model and hotel recommender stages write to `model_outputs/`:
+
+| Output | Purpose |
+|---|---|
+| `destination_model_comparison.csv` | All 6 destination experiments (3 models × 2 splits) with metrics |
+| `best_destination_model.joblib` | Best destination recommender (Logistic Regression, user split) |
+| `predictions_<split>_<model>.csv` | Per-experiment destination predictions |
+| `destination_all_predictions.csv` | Combined predictions for all experiments |
+| `hotel_training_data.csv` | Full prepared hotel dataset (train + test) |
+| `hotel_train.csv` | Hotel training split (user-chronological) |
+| `hotel_test.csv` | Hotel test split (user-chronological) |
+| `hotel_feature_columns.csv` | List of features used for hotel models |
+| `hotel_model_comparison.csv` | All 3 hotel models with MAE, RMSE, R² |
+| `best_hotel_model.joblib` | Best hotel model (Linear Regression) |
+| `hotel_predictions_<model>.csv` | Per-model hotel predictions |
+| `inference_result_<user>_<date>.json` | Inference pipeline output |
+| `seasonal_features.csv` | Engineered seasonal features (if saved) |
+
 ## 8. How to interpret the evaluation
 
 The recommendation scripts use ranking-oriented metrics, including:
@@ -271,6 +386,11 @@ The recommendation scripts use ranking-oriented metrics, including:
 - **MRR@5 (Mean Reciprocal Rank at 5):** rewards the model more when the correct destination appears near the top of the list. A correct destination at rank 1 contributes more than one at rank 5.
 - **Coverage:** fraction of possible destinations that the recommender is able to recommend across the evaluated examples, where reported.
 
+For hotel expenditure prediction (regression):
+- **MAE (Mean Absolute Error):** average absolute difference between predicted and actual hotel expenditure.
+- **RMSE (Root Mean Squared Error):** penalizes larger errors more heavily.
+- **R² (Coefficient of Determination):** proportion of variance explained by the model.
+
 Use the same split and metric implementation when comparing models. A small metric improvement is not automatically meaningful; inspect sample counts, subgroup behavior, and whether the improvement holds for users with different amounts of history.
 
 ### Known interpretation limits
@@ -278,8 +398,9 @@ Use the same split and metric implementation when comparing models. A small metr
 - A personalized baseline can outperform a more complex model. That is a valid result, not a reason to hide the baseline.
 - The chronological test evaluates future journeys relative to a fixed training history. It does not necessarily simulate an online system that updates its history after every new booking.
 - Recurring destination/month patterns are descriptive signals, not proof of causal seasonality.
-- The hotel data currently has only one distinct hotel name per destination. Therefore, a destination-to-hotel result is effectively a lookup, not a meaningful personalized hotel-ranking evaluation. Do not claim that this data establishes a strong hotel recommendation model.
+- The hotel data currently has only one distinct hotel name per destination. Therefore, a destination-to-hotel result is effectively a lookup, not a meaningful personalized hotel-ranking evaluation. The hotel model predicts **expenditure** (regression), not hotel identity. Do not claim that this data establishes a strong hotel recommendation model for hotel identity.
 - Historical booking data may reflect limited coverage and user behavior in the dataset, not all possible travel preferences. Recommendations should be described accordingly.
+- The user-specific chronological split retains users with only one journey in the training set, which can inflate training set size relative to test set.
 
 ## 9. Troubleshooting
 

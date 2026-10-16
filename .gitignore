@@ -1,5 +1,25 @@
 users.csv
 hotels.csv
 gender_model.joblib
+
+# Generated model binaries (not committed; see README.md setup order)
+*.joblib
+
+# Large/duplicate generated intermediates
+model_outputs/train_candidates_*.csv
+model_outputs/hotel_training_data.csv
+
+# Local environments, tracking stores and scratch dirs
+voyage/
+.venv/
+venv/
+env/
+mlruns/
+mlflow.db
+backup_*/
+*.log
+.~lock.*
+
 __pycache__/
 *.pyc
+.ipynb_checkpoints/

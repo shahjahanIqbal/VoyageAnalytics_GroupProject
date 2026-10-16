@@ -1,0 +1,26 @@
+{
+  "destination_recommendations": [
+    {
+      "destination": "Rio de Janeiro (RJ)",
+      "score": 0.6760231168647366
+    },
+    {
+      "destination": "Campo Grande (MS)",
+      "score": 0.5402286979331952
+    },
+    {
+      "destination": "Florianopolis (SC)",
+      "score": 0.46135460517141913
+    },
+    {
+      "destination": "Salvador (BH)",
+      "score": 0.4032698961029215
+    },
+    {
+      "destination": "Brasilia (DF)",
+      "score": 0.37342733237115144
+    }
+  ],
+  "selected_destination": "Rio de Janeiro (RJ)",
+  "predicted_hotel_total": 520.6674162533639
+}
