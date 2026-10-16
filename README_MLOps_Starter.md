@@ -241,6 +241,24 @@ python mlops_runner.py \
   -- python run_recommendation_inference.py --user_code 0 --origin "Recife (PE)" --departure_date "2024-07-15"
 ```
 
+### Member 8: Hotel destination recommender (NEW)
+
+Trains the destination-constrained hotel name recommender (`train_hotel_recommender.py`), which ranks only hotels available within the selected destination using user profile, trip history, and hotel statistics.
+
+```bash
+python mlops_runner.py \
+  --experiment-name VoyageAnalytics \
+  --run-name hotel-recommender \
+  --input-file travel_recommender_outputs/journeys_train.csv \
+  --input-file travel_recommender_outputs/journeys_test.csv \
+  --input-file users.csv \
+  --metrics-file model_outputs/hotel_recommender_metrics.json \
+  --artifact model_outputs/hotel_recommender.joblib \
+  --artifact model_outputs/hotel_catalog.csv \
+  --param stage=hotel_recommendation \
+  -- python train_hotel_recommender.py
+```
+
 ## 5. CLI options
 
 - `--experiment-name`: shared MLflow experiment name (default `VoyageAnalytics`).

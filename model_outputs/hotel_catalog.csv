@@ -1,0 +1,10 @@
+hotelName,destination,hotel_bookings,hotel_median_price,hotel_median_days,hotel_median_total,dest_bookings,hotel_destination_share
+Hotel Z,Aracaju (SE),3291,208.04,2.0,416.08,3291,1.0
+Hotel BP,Brasilia (DF),3556,247.62,2.0,495.24,3556,1.0
+Hotel BW,Campo Grande (MS),3478,60.39,2.0,120.78,3478,1.0
+Hotel A,Florianopolis (SC),2669,313.02,2.0,626.04,2669,1.0
+Hotel BD,Natal (RN),3822,242.88,2.0,485.76,3822,1.0
+Hotel AU,Recife (PE),3599,312.83,2.0,625.66,3599,1.0
+Hotel CB,Rio de Janeiro (RJ),4060,165.99,3.0,497.97,4060,1.0
+Hotel K,Salvador (BH),4029,263.41,3.0,790.23,4029,1.0
+Hotel AF,Sao Paulo (SP),3910,139.1,3.0,417.3,3910,1.0

@@ -46,10 +46,19 @@ API_BASE = os.getenv("API_BASE", "http://localhost:5001/api/v1")
 # ============================================================
 # API CLIENT
 # ============================================================
+def _http_error_detail(resp):
+    try:
+        detail = resp.json().get("error", resp.text)
+    except Exception:
+        detail = resp.text
+    detail = str(detail).strip() or resp.reason
+    return f"HTTP {resp.status_code}: {detail}"
+
 def api_get(endpoint, fallback_fn=None):
     try:
         resp = requests.get(f"{API_BASE}{endpoint}", timeout=5)
-        resp.raise_for_status()
+        if not resp.ok:
+            raise RuntimeError(_http_error_detail(resp))
         return resp.json(), None
     except Exception as e:
         if fallback_fn:
@@ -59,7 +68,8 @@ def api_get(endpoint, fallback_fn=None):
 def api_post(endpoint, payload, fallback_fn=None):
     try:
         resp = requests.post(f"{API_BASE}{endpoint}", json=payload, timeout=15)
-        resp.raise_for_status()
+        if not resp.ok:
+            raise RuntimeError(_http_error_detail(resp))
         return resp.json(), None
     except Exception as e:
         if fallback_fn:
@@ -68,7 +78,7 @@ def api_post(endpoint, payload, fallback_fn=None):
 
 def get_available_models():
     """Fetch available models from API."""
-    result, error = api_get("/api/v1/models")
+    result, error = api_get("/models")
     if error or not result:
         # Fallback model list
         return {
@@ -508,37 +518,22 @@ def render_destination_planner():
         )
         
         col1, col2 = st.columns([1, 1])
+
+        # Recommend hotels within the selected destination
         with col1:
-            if st.button("Predict hotel expenditure", type="primary", key="predict_hotel", use_container_width=True):
+            if st.button("Recommend hotels", type="primary", key="recommend_hotel", use_container_width=True):
                 payload = {
                     "user_code": user_code,
                     "destination": selected_destination,
                     "departure_date": departure_date.strftime("%Y-%m-%d"),
-                    "model": selected_hotel_model
+                    "top_k": 5,
                 }
-                
-                def fallback_hotel(payload):
-                    # Local fallback: return historical average
-                    user_dest = history[(history["userCode"] == str(user_code)) & (history["destination"] == selected_destination)]
-                    if len(user_dest) > 0:
-                        return {"predicted_hotel_total": round(user_dest["total"].mean(), 2), "model": "local_fallback"}
-                    dest_avg = history[history["destination"] == selected_destination]["total"].mean()
-                    return {"predicted_hotel_total": round(dest_avg, 2), "model": "local_fallback"}
-                
-                result, error = api_post("/hotels/predict", payload, fallback_hotel)
-                
+                result, error = api_post("/hotels/recommend", payload)
                 if error:
                     st.warning(f"⚠️ {error}")
-                
-                if result:
+                else:
                     st.session_state.planner_hotel_result = result
                     st.session_state.planner_hotel_destination = selected_destination
-                    st.session_state.planner_hotel_model = selected_hotel_model
-                
-                # Also fetch historical data
-                hist_result, _ = api_post("/hotels/historical", {"destination": selected_destination})
-                if hist_result and "hotels" in hist_result:
-                    st.session_state.planner_hotel_historical = pd.DataFrame(hist_result["hotels"])
         
         with col2:
             if st.button("Show historical hotel data only", key="show_historical_only", use_container_width=True):
@@ -551,48 +546,52 @@ def render_destination_planner():
     # Display hotel results (side-by-side)
     if "planner_hotel_destination" in st.session_state:
         selected_destination = st.session_state.planner_hotel_destination
-        
+
         st.markdown("---")
         st.subheader(f"Hotel Recommendation for {selected_destination}")
-        
+
         col_ml, col_hist = st.columns(2)
-        
+
         with col_ml:
-            st.markdown("### 🤖 ML Predicted Hotel Expenditure")
+            st.markdown("### 🏨 Recommended Hotels")
             if "planner_hotel_result" in st.session_state:
                 hotel_res = st.session_state.planner_hotel_result
-                pred_total = hotel_res.get("predicted_hotel_total", 0)
-                model_used = hotel_res.get("model", "unknown")
-                
-                st.metric(
-                    "Predicted Hotel Total",
-                    f"${pred_total:,.2f}",
-                    help=f"Model: {model_used}"
-                )
-                st.caption(f"Model: {model_used}")
-                
-                # Historical context if available
-                if "historical_context" in hotel_res:
-                    hist = hotel_res["historical_context"]
-                    if hist.get("user_hotels_at_destination"):
-                        st.markdown("**Your Historical Hotels at this Destination:**")
-                        for h in hist["user_hotels_at_destination"]:
-                            st.write(f"- {h['hotel']}: {h['stays']} stay(s)")
+                hotels = hotel_res.get("hotels", [])
+                message = hotel_res.get("message")
+                if message:
+                    st.info(message)
+                if hotels:
+                    table = pd.DataFrame([
+                        {
+                            "Rank": h["rank"],
+                            "Hotel": h["hotel"],
+                            "Score": f"{h['score']:.3f}",
+                            "Median price/day": f"${h['median_price_per_day']:.2f}",
+                            "Typical stay (days)": h["typical_stay_days"],
+                            "Typical total": f"${h['typical_total']:.2f}",
+                            "Bookings": h["bookings"],
+                        }
+                        for h in hotels
+                    ])
+                    st.dataframe(table, hide_index=True, use_container_width=True)
+                    st.caption("Recommended hotels are constrained to the selected destination.")
+                else:
+                    st.info("No hotels available for this destination.")
             else:
-                st.info("Click 'Predict hotel expenditure' to get ML prediction")
-        
+                st.info("Click 'Recommend hotels' to see ML recommendations")
+
         with col_hist:
             st.markdown("### 📊 Historical Hotel Data")
             if "planner_hotel_historical" in st.session_state:
                 hist_df = st.session_state.planner_hotel_historical
                 st.dataframe(hist_df, hide_index=True, use_container_width=True)
             else:
-                st.info("Historical data will appear here after prediction or click 'Show historical hotel data only'")
-        
+                st.info("Historical data will appear here after clicking 'Show historical hotel data only'")
+
         st.caption(
-            "Hotel data contains one distinct hotel name per destination. "
-            "ML model predicts expenditure based on user/travel features. "
-            "Historical table shows recorded bookings."
+            "Recommender scores hotels within the destination using user profile, "
+            "trip history and hotel statistics. If no hotel data exists for the "
+            "destination, no recommendations are shown."
         )
 
 

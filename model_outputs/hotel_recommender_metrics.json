@@ -1,0 +1,8 @@
+{
+  "unrestricted_top1_accuracy": 1.0,
+  "unrestricted_hit_at_3": 1.0,
+  "unrestricted_mrr": 1.0,
+  "test_bookings": 8138,
+  "destinations_served": 9,
+  "constrained_coverage": 1.0
+}

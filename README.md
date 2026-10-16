@@ -68,6 +68,7 @@ Stage-wise (recommended; also writes comparison and prediction CSVs):
 ```bash
 python train_destination_models.py   # 6 destination models + seasonal features + candidates
 python train_hotel_model.py          # 3 hotel models + metrics
+python train_hotel_recommender.py    # destination-constrained hotel name recommender + metrics
 ```
 
 Or the one-shot alternative (trains all 9 models in one command):
@@ -77,6 +78,14 @@ python train_all_models.py
 ```
 
 Outputs (in `model_outputs/`): `dest_model_*.joblib`, `hotel_model_*.joblib`, `best_destination_model.joblib`, `best_hotel_model.joblib`, `dest_candidates.joblib`, `seasonal_features_*.joblib`, plus comparison/prediction CSVs.
+
+### 4b. Train the hotel destination recommender
+
+```bash
+python train_hotel_recommender.py   # destination-constrained hotel name ranker + metrics
+```
+
+Outputs (in `model_outputs/`): `hotel_recommender.joblib`, `hotel_catalog.csv`, `hotel_recommender_metrics.json`. It ranks only hotels historically recorded AT the selected destination using user profile (gender, age, company), trip history and hotel statistics.
 
 ### 5. Train the flight price model (for the Flight Price Predictor tab)
 
@@ -124,6 +133,22 @@ docker compose up --build
 
 The container runs the API (5001) and Streamlit (8501) together; open http://localhost:8501.
 
+### API endpoints
+
+All endpoints live under `http://localhost:5001`:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/health` | GET | API status and loaded model summary |
+| `/api/v1/models` | GET | Catalog of destination/hotel models with metadata |
+| `/api/v1/destinations/recommend` | POST | Destination recommendations (user, origin, date, model, top_k) |
+| `/api/v1/destinations/baseline` | POST | Baseline destination recommendations (personalized history / global popularity) |
+| `/api/v1/hotels/predict` | POST | Hotel expenditure prediction (user, destination, date, model) |
+| `/api/v1/hotels/recommend` | POST | **Hotel name recommendations within the selected destination** (user, destination, date, top_k) |
+| `/api/v1/hotels/historical` | POST | Historical booking data for a destination |
+
+The Destination Planner tab in the Streamlit app recommends hotel **names** constrained to the chosen destination (using `train_hotel_recommender.py`), with historical booking context shown side by side.
+
 ## Repository layout (key files)
 
 ```
@@ -133,6 +158,7 @@ train_all_models.py               one-shot training for all destination + hotel 
 train_destination_models.py       destination models (3 algorithms × 2 splits) + seasonal features
 prepare_hotel_data.py             hotel training data preparation
 train_hotel_model.py              hotel expenditure models
+train_hotel_recommender.py        destination-constrained hotel name recommender
 run_recommendation_inference.py   CLI end-to-end inference (destination -> hotel)
 evaluate_all_models.py            unified evaluation report
 run_recommendation_pipeline.py    orchestrates the legacy data/baseline pipeline

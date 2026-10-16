@@ -313,6 +313,11 @@ def seasonal_recommendations_ml(user_code, origin, departure_month, history_df, 
     
     return pd.DataFrame(rows).sort_values(["score", "destination"], ascending=[False, True]).head(k).reset_index(drop=True)
 
+def _safe_mean(series):
+    """Mean that tolerates empty or all-NaN columns (returns 0.0)."""
+    value = pd.to_numeric(series, errors="coerce").mean()
+    return 0.0 if pd.isna(value) else float(value)
+
 def build_hotel_features(user_code, destination, departure_date, history_df):
     """Build features for hotel expenditure prediction."""
     departure_date = pd.to_datetime(departure_date)
@@ -323,9 +328,10 @@ def build_hotel_features(user_code, destination, departure_date, history_df):
     hotel_dest = history_df[history_df["destination"] == destination]
     
     if len(user_dest_past) > 0:
-        most_common_hotel = user_dest_past["hotelName"].mode().iloc[0]
-        user_dest_avg_hotel_price = user_dest_past["price"].mean()
-        user_dest_avg_hotel_total = user_dest_past["total"].mean()
+        hotel_modes = user_dest_past["hotelName"].dropna().mode()
+        most_common_hotel = hotel_modes.iloc[0] if len(hotel_modes) > 0 else "none"
+        user_dest_avg_hotel_price = _safe_mean(user_dest_past["price"])
+        user_dest_avg_hotel_total = _safe_mean(user_dest_past["total"])
         user_dest_past_hotel_stays = len(user_dest_past)
     else:
         most_common_hotel = "none"
@@ -334,10 +340,10 @@ def build_hotel_features(user_code, destination, departure_date, history_df):
         user_dest_past_hotel_stays = 0
     
     user_past_trip_count = len(user_past)
-    user_past_total_expenditure = user_past["total"].sum()
-    user_past_avg_expenditure = user_past["total"].mean() if len(user_past) > 0 else 0
-    user_past_hotel_expenditure = user_past["total"].sum()
-    user_past_avg_hotel_expenditure = user_past["total"].mean() if len(user_past) > 0 else 0
+    user_past_total_expenditure = 0.0 if pd.isna(user_past["total"].sum()) else float(user_past["total"].sum())
+    user_past_avg_expenditure = _safe_mean(user_past["total"])
+    user_past_hotel_expenditure = user_past_total_expenditure
+    user_past_avg_hotel_expenditure = user_past_avg_expenditure
     user_past_flight_expenditure = 0
     user_past_avg_flight_expenditure = 0
     user_preferred_flight_class = "unknown"
@@ -345,9 +351,9 @@ def build_hotel_features(user_code, destination, departure_date, history_df):
     user_unique_destinations = user_past["destination"].nunique()
     user_unique_origins = user_past["origin"].nunique()
     
-    dest_avg_hotel_price = hotel_dest["price"].mean() if len(hotel_dest) > 0 else 0
-    dest_avg_hotel_total = hotel_dest["total"].mean() if len(hotel_dest) > 0 else 0
-    dest_avg_hotel_days = hotel_dest["days"].mean() if len(hotel_dest) > 0 else 0
+    dest_avg_hotel_price = _safe_mean(hotel_dest["price"])
+    dest_avg_hotel_total = _safe_mean(hotel_dest["total"])
+    dest_avg_hotel_days = _safe_mean(hotel_dest["days"])
     dest_hotel_count = hotel_dest["hotelName"].nunique() if len(hotel_dest) > 0 else 0
     
     return {
@@ -382,6 +388,8 @@ def build_hotel_features(user_code, destination, departure_date, history_df):
 def load_all_models():
     global DEST_MODELS, HOTEL_MODELS, DEST_CANDIDATES, SEASONAL_FEATURES
     global HISTORY_DF, HOTELS_DF, JOURNEYS_WITH_HOTELS
+    global HOTEL_RECOMMENDER, HOTEL_CATALOG, HOTEL_PROFILES
+    global MEDIAN_AGE, MEDIAN_MONTH, MEDIAN_DOW
     
     print("Loading pre-trained models...")
 
@@ -477,6 +485,39 @@ def load_all_models():
 
     # History for baselines/seasonal
     HISTORY_DF = user_train.copy()
+
+    # Hotel recommender (destination-constrained hotel name ranking)
+    HOTEL_RECOMMENDER = None
+    HOTEL_CATALOG = None
+    HOTEL_PROFILES = {}
+    MEDIAN_AGE = 0.0
+    MEDIAN_MONTH = 6.0
+    MEDIAN_DOW = 0.0
+    try:
+        rec_model = _load_joblib(MODEL_DIR / "hotel_recommender.joblib")
+        catalog = _load_csv(MODEL_DIR / "hotel_catalog.csv")
+        if rec_model is not None and catalog is not None and not catalog.empty:
+            HOTEL_RECOMMENDER = rec_model
+            HOTEL_CATALOG = catalog
+            print("  Loaded hotel recommender")
+    except Exception as exc:
+        print(f"  [skip] hotel recommender: {exc}")
+
+    # User/trip profiles for hotel recommendations
+    try:
+        users_df = pd.read_csv(BASE_DIR / "users.csv")
+        users_df["code"] = users_df["code"].astype(str)
+        train_df = _load_csv(DATA_DIR / "journeys_train.csv")
+        if not train_df.empty:
+            train_df["userCode"] = train_df["userCode"].astype(str)
+            prof_df = _hotel_user_profiles(train_df, users_df)
+            HOTEL_PROFILES = prof_df.to_dict("index")
+            MEDIAN_AGE = float(prof_df["age"].median()) if len(prof_df) else 0.0
+            MEDIAN_MONTH = float(train_df["departure_date"].dt.month.median())
+            MEDIAN_DOW = float(train_df["departure_date"].dt.dayofweek.median())
+            print(f"  Loaded hotel recommendation profiles for {len(HOTEL_PROFILES)} users")
+    except Exception as exc:
+        print(f"  [skip] hotel profiles: {exc}")
 
     # Load hotel models
     print("Loading hotel models...")
@@ -707,7 +748,7 @@ def predict_hotel_expenditure():
         
         # Build features
         feat_dict = build_hotel_features(user_code, destination, departure_date, JOURNEYS_WITH_HOTELS)
-        X = pd.DataFrame([feat_dict])
+        X = pd.DataFrame([feat_dict]).fillna(0)
         
         # Ensure all features present
         for f in HOTEL_FEATURES:
@@ -716,15 +757,6 @@ def predict_hotel_expenditure():
         X = X[HOTEL_FEATURES]
         
         model = HOTEL_MODELS[model_key]
-        
-        # For linear regression, it's already trained
-        # For others, train on first use
-        if model_key != "linear_regression":
-            # Train on hotel training data
-            train_df = pd.read_csv(MODEL_DIR / "hotel_train.csv")
-            train_df["userCode"] = train_df["userCode_x"] if "userCode_x" in train_df.columns else train_df["userCode"]
-            # Actually need proper feature alignment - use fallback
-            pass
         
         prediction = float(model.predict(X)[0])
         
@@ -769,6 +801,162 @@ def hotel_historical():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
+# HOTEL RECOMMENDER (destination-constrained hotel names)
+# ============================================================
+HOTEL_FEATURE_COLUMNS = [
+    "gender", "company", "origin", "destination", "hotelName",
+    "age",
+    "user_trip_count",
+    "user_avg_total",
+    "user_avg_days",
+    "user_hotel_stays",
+    "user_avg_hotel_total",
+    "user_dest_visits",
+    "flight_rows",
+    "departure_month",
+    "departure_dayofweek",
+    "has_return",
+    "hotel_bookings",
+    "hotel_median_price",
+    "hotel_median_days",
+    "hotel_median_total",
+    "hotel_destination_share",
+]
+
+
+def _hotel_user_profiles(df, users):
+    """Aggregate user/trip history features used by the hotel recommender."""
+    df = df.copy()
+    df["_is_hotel"] = (df["hotelName"] != "nan").astype(int)
+    df = df.merge(users, left_on="userCode", right_on="code", how="left")
+    g = df.groupby("userCode").agg(
+        user_trip_count=("destination", "size"),
+        user_avg_total=("total", "mean"),
+        user_avg_days=("days", "mean"),
+        user_hotel_stays=("_is_hotel", "sum"),
+        user_dest_visits=("destination", "nunique"),
+    )
+    g["user_avg_hotel_total"] = df[df["_is_hotel"] == 1].groupby("userCode")["total"].mean()
+    g = g.merge(users[["code", "gender", "company", "age"]].rename(columns={"code": "userCode"}),
+                on="userCode", how="left")
+    g["gender"] = g["gender"].fillna("unknown").astype(str)
+    g["company"] = g["company"].fillna("unknown").astype(str)
+    g["age"] = pd.to_numeric(g["age"], errors="coerce")
+    g["age"] = g["age"].fillna(g["age"].median() if g["age"].notna().any() else 0.0)
+    num_cols = ["user_trip_count", "user_avg_total", "user_avg_days",
+                "user_hotel_stays", "user_avg_hotel_total", "user_dest_visits", "age"]
+    g[num_cols] = g[num_cols].fillna(0.0)
+    return g
+
+
+def _hotel_inference_features(user_code, destination, departure_date, hotel, catalog_by_hotel):
+    prof = HOTEL_PROFILES.get(user_code)
+    if prof is None:
+        prof = {
+            "age": MEDIAN_AGE, "gender": "unknown", "company": "unknown",
+            "user_trip_count": 0.0, "user_avg_total": 0.0, "user_avg_days": 0.0,
+            "user_hotel_stays": 0.0, "user_avg_hotel_total": 0.0, "user_dest_visits": 0.0,
+        }
+    try:
+        d = pd.Timestamp(departure_date)
+        month = float(d.month)
+        dow = float(d.dayofweek)
+    except Exception:
+        month = MEDIAN_MONTH
+        dow = MEDIAN_DOW
+    cat = catalog_by_hotel.get(hotel, {})
+
+    def _num(key, default):
+        val = prof.get(key, default) if isinstance(prof, dict) else default
+        if pd.isna(val):
+            return float(default)
+        return float(val)
+
+    return {
+        "gender": str(prof.get("gender", "unknown")),
+        "company": str(prof.get("company", "unknown")),
+        "origin": "",
+        "destination": str(destination),
+        "hotelName": str(hotel),
+        "age": _num("age", MEDIAN_AGE),
+        "user_trip_count": _num("user_trip_count", 0.0),
+        "user_avg_total": _num("user_avg_total", 0.0),
+        "user_avg_days": _num("user_avg_days", 0.0),
+        "user_hotel_stays": _num("user_hotel_stays", 0.0),
+        "user_avg_hotel_total": _num("user_avg_hotel_total", 0.0),
+        "user_dest_visits": _num("user_dest_visits", 0.0),
+        "flight_rows": 1.0,
+        "departure_month": month,
+        "departure_dayofweek": dow,
+        "has_return": 0.0,
+        "hotel_bookings": _num(cat.get("hotel_bookings", 0.0), 0.0),
+        "hotel_median_price": _num(cat.get("hotel_median_price", 0.0), 0.0),
+        "hotel_median_days": _num(cat.get("hotel_median_days", 0.0), 0.0),
+        "hotel_median_total": _num(cat.get("hotel_median_total", 0.0), 0.0),
+        "hotel_destination_share": _num(cat.get("hotel_destination_share", 0.0), 0.0),
+    }
+
+
+@app.route("/api/v1/hotels/recommend", methods=["POST"])
+def recommend_hotels():
+    """Recommend hotel names within the user-selected destination."""
+    try:
+        data = request.get_json()
+        user_code = str(data.get("user_code"))
+        destination = str(data.get("destination"))
+        departure_date = data.get("departure_date")
+        top_k = int(data.get("top_k", 5))
+
+        if HOTEL_RECOMMENDER is None or HOTEL_CATALOG is None:
+            return jsonify({"error": "hotel recommender is not available"}), 503
+
+        cands = HOTEL_CATALOG[HOTEL_CATALOG["destination"] == destination]
+        if cands.empty:
+            return jsonify({
+                "destination": destination,
+                "hotels": [],
+                "model": "hotel_recommender",
+                "type": "ml",
+                "message": "no hotel data available for this destination",
+            })
+
+        catalog_by_hotel = {r["hotelName"]: r for _, r in HOTEL_CATALOG.iterrows()}
+        X_rows = [
+            _hotel_inference_features(user_code, destination, departure_date, h, catalog_by_hotel)
+            for h in cands["hotelName"]
+        ]
+        X = pd.DataFrame(X_rows, columns=HOTEL_FEATURE_COLUMNS)
+        scores = HOTEL_RECOMMENDER.predict_proba(X)[:, 1]
+
+        out = cands.copy()
+        out["score"] = scores
+        out = out.sort_values("score", ascending=False).head(max(1, top_k))
+
+        hotels = []
+        for _, r in out.iterrows():
+            hotels.append({
+                "rank": len(hotels) + 1,
+                "hotel": r["hotelName"],
+                "score": round(float(r["score"]), 4),
+                "median_price_per_day": round(float(r["hotel_median_price"]), 2),
+                "typical_stay_days": round(float(r["hotel_median_days"]), 1),
+                "typical_total": round(float(r["hotel_median_total"]), 2),
+                "bookings": int(r["hotel_bookings"]),
+            })
+
+        return jsonify({
+            "destination": destination,
+            "hotels": hotels,
+            "model": "hotel_recommender",
+            "type": "ml",
+            "top_k": top_k,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # ============================================================
 # MAIN
